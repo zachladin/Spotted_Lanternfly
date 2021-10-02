@@ -337,7 +337,7 @@ for(h in 1:length(HumanPopList)){
 #now set up loops to process and generate rasters
 
 #set my Google API key
-myAPIkey = "AIzaSyB2_6ltyYLn9FrXK4XvOHsPEVAG0azV0HU"
+myAPIkey = "YOUR KEY"
 register_google(myAPIkey)
 
 ##############################################################################

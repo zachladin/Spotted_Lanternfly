@@ -45,7 +45,7 @@ source("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/SLF_
 source("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/SLF_Individual_Based_Model/R_Models/R_Source/getCounties.R")
 
 #set my Google API key
-myAPIkey = "AIzaSyB2_6ltyYLn9FrXK4XvOHsPEVAG0azV0HU"
+myAPIkey = "YOUR KEY"
 register_google(myAPIkey)
 
 #function to threshold raster by cell values

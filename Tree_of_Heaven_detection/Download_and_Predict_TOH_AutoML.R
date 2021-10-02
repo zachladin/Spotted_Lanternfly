@@ -211,7 +211,7 @@ library(jpeg)
 library(RCurl)
 
 ## your valid API key here
-register_google("AIzaSyAaDHA8482JIVvEv8yFPPcpvUukZ1j69zo")
+register_google("YOUR KEY")
 
 #read in all data and map points
 allPred<-read.csv(file="/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predict_TOH/Data/TOH_predictions_AutoML_saved_ALL_2020-01-13.csv",header=TRUE)

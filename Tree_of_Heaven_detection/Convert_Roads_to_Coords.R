@@ -19,9 +19,9 @@ library(googleway)
 
 #register Google API key
 #google API key
-register_google("AIzaSyAaDHA8482JIVvEv8yFPPcpvUukZ1j69zo")
+register_google("YOUR KEY")
 ## your valid API key here
-#StreetViewKey <- "AIzaSyAaDHA8482JIVvEv8yFPPcpvUukZ1j69zo"
+#StreetViewKey <- "YOUR KEY"
 
 
 #read in PA road data
