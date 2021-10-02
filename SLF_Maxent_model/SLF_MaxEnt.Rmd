@@ -1,0 +1,814 @@
+---
+title: "Predicting Potential Distributions of Spotted Lanternfly with MaxEnt"
+author: "Zachary Ladin (zach@udel.edu)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+  theme: lumen
+---
+
+<br />
+
+### Abstract
+The spotted lanternfly (*Lycorma delicatula*; hereafter SLF), is a hemipteran insect from Asia, that is now spreading rapidly throughout the mid-Atlantic United States (Barringer et al. 2015). Following two recent studies using maximum entropy (MAXENT) models to predict the potenital areas for SLF expansion at both national (Namgung et al. 2020) and global scales (Wakie et al. 2019), we were motivated to use similar methods, and improve upon models to include model covariates to capture components of antrhopogenically-mediated spread (e.g., hitchhiking on human transportation).
+
+<br />
+
+### Introduction
+
+<br />
+
+### Methods
+
+<br />
+
+#### Gathering and preparing variables for MAXENT
+In this section we visualize the 1-km resolution climate data constituting the computed 19 BioClimate variables (O'Donnell et al. 2012) from the WorldClim2 data (Fick and Hijmans 2017). These BioClimate variable data that are global in their coverage, along with a digital elevation map (DEM) were used in recent studies that also modeled areas of potential spread of SLF (Wakie et al. 2019, Namgung et al.2020). 
+<br />
+
+##### Load required packages
+```{r, warning=FALSE, echo=TRUE}
+
+#set working directory
+setwd("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt")
+
+#load packages
+suppressMessages({
+library(raster)
+library(ggplot2)
+library(rgdal)
+library(gdalUtils)
+library(pals)
+library(maps)
+library(rgeos)
+library(sp)
+library(Hmisc)
+library(plyr)
+library(rowr)
+library(knitr)
+library(GGally)
+library(geojsonio)
+library(sf)
+library(pointdensityP)
+library(KernSmooth)
+library(dismo)
+library(mapdata)
+library(maptools)
+library(plyr)
+library(reshape2)
+library(kableExtra)
+  
+#load functions
+  
+#summary function to get summary stats
+summaryFunction <- function(DataIn, factor, response){
+  summaryOut <- plyr::ddply(DataIn, factor, .fun = function(xx){
+    c(n = length(xx[,response]),
+      mean = mean(xx[,response],na.rm=TRUE),
+      var = var(xx[,response],na.rm=TRUE),
+      SD = sd(xx[,response],na.rm=TRUE),
+      SE = sqrt(var(xx[,response])/length(xx[,response])),
+      CV = sd(xx[,response],na.rm=TRUE)/mean(xx[,response],na.rm=TRUE) * 100)
+  })
+  return(summaryOut)
+  dev.off()
+}
+
+
+})
+```
+
+<br />
+
+##### Generate shapefiles of SLF native (Asia) and introduced ranges (USA).
+```{r, warning=FALSE, fig.width=8}
+
+#import WorldClim raster to get projection info
+worldclimelev<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/WorldClim_elevation/wc2.1_30s_elev.tif")
+
+#set projection for cropping and masking rasters
+myCRS<-projection(worldclimelev)
+
+#get shapefiles vector of China, India, Vietnam, Korea, and Japan
+NativeRangeMap = map('worldHires',list('China(?!:)','India(?!:)',"Vietnam(?!:)","North Korea(?!:)","South Korea(?!:)","Japan"),boundary=FALSE, interior = FALSE,fill=TRUE, col="royalblue1", plot=FALSE)
+
+IntroducedRangeMap<-map('worldHires',"USA(?!:)",boundary=FALSE, interior = FALSE,fill=TRUE, col="royalblue1", plot=FALSE)
+
+#convert map to spatialPolygons
+NativeRangeMap_sp<-map2SpatialPolygons(NativeRangeMap,IDs=NativeRangeMap$names,proj4string = CRS(myCRS), checkHoles=FALSE)
+#plot(NativeRangeMap_sp, col="gray90")
+
+#convert map to spatialPolygons
+IntroducedRangeMap_sp<-map2SpatialPolygons(IntroducedRangeMap,IDs=IntroducedRangeMap$names,proj4string = CRS(myCRS), checkHoles=FALSE)
+
+#plot(IntroducedRangeMap_sp, col="gray90")
+
+#convert to SpatialPolygonsDataFrame
+native_pid <- sapply(slot(NativeRangeMap_sp, "polygons"), function(x) slot(x, "ID"))
+native_p.df <- data.frame( ID=1:length(NativeRangeMap_sp), row.names = native_pid)
+NativeRangeMap_sp.df <- SpatialPolygonsDataFrame(NativeRangeMap_sp,native_p.df)
+
+introduced_pid <- sapply(slot(IntroducedRangeMap_sp, "polygons"), function(x) slot(x, "ID"))
+introduced_p.df <- data.frame( ID=1:length(IntroducedRangeMap_sp), row.names = introduced_pid)
+IntroducedRangeMap_sp.df <- SpatialPolygonsDataFrame(IntroducedRangeMap_sp,introduced_p.df)
+
+Comb_map<-rbind(NativeRangeMap_sp.df, IntroducedRangeMap_sp.df)
+
+#save as a shapefile
+writeOGR(obj=Comb_map, dsn="/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/SLF_Range_Map", layer="SLF_range_countries", driver="ESRI Shapefile",overwrite_layer = TRUE)
+
+#read in shapefile
+SLF_shp<-readOGR(dsn="/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/SLF_Range_Map/",layer="SLF_range_countries")
+
+#plot(SLF_shp, col="gray90")
+
+#plot both plots
+par(mfrow=c(1,2))
+plot(IntroducedRangeMap_sp, col="gray90", main="USA map")
+plot(NativeRangeMap_sp, col="gray90", main="Asia map")
+
+
+
+```
+
+<br />
+
+##### Crop and save WorldClim 19 BioClimate variables to SLF_shp
+```{r, eval=FALSE, warning=FALSE, message=FALSE}
+#now make lists for USA and for Asia
+
+#make list of raster names (full file paths)
+rasterNameListFull <-c(gsub(".tif","", list.files("./Data/WorldClim_bioclim/wc2.1_30s_bio", full.names=TRUE)))
+
+#make list of raster names
+rasterNameList <-c(gsub(".tif","", list.files("./Data/WorldClim_bioclim/wc2.1_30s_bio")))
+
+#loop through and export rasters clipped to USA and Asia shapefiles
+ for(j in 1:length(rasterList)){
+    
+    new.raster<-raster(rasterNameListFull[j])
+    new.rasterName<-rasterNameList[j]
+    print(new.rasterName)
+    
+    print("cropping raster")
+    ras_crop = raster::crop(new.raster, extent(SLF_shp))
+    ras_mask = raster::mask(ras_crop, SLF_shp)
+    #plot(ras_mask)
+    
+    raster::writeRaster(ras_mask, filename=file.path(paste("./Data/BioClim_WorldClim_rasters/",new.rasterName,"_ALL_1km.tif",sep="")), format="GTiff", overwrite=TRUE)
+    
+ }
+
+```
+
+
+<br />
+
+##### Plot example of full raster (e.g., BioClim 1: Annual mean Temp)
+```{r, fig.width=8}
+
+wc_1<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/WorldClim_bioclim/wc2.1_30s_bio/wc2.1_30s_bio_1.tif")
+
+#plot full raster
+plot(wc_1, col=parula(100))
+
+bio1 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_1_ALL_1km.tif")
+
+```
+
+<br />
+
+##### Plot example of cropped rasters (e.g., BioClim 1: Annual mean Temp)
+```{r, fig.width=8, fig.height=10}
+#plot example 
+#plot(bio1, col=parula(100))
+
+#separate and plot
+USA_bio1<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_US_Asia/wc2.1_30s_bio_1_USA_1km.tif")
+Asia_bio1<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_US_Asia/wc2.1_30s_bio_1_Asia_1km.tif")
+
+#plot both plots
+par(mai=c(1,0.5,1,0.5), mfrow=c(2,1))
+plot(USA_bio1, col=parula(100), main="Annual Mean Temp - USA (deg C)")
+plot(Asia_bio1, col=parula(100), main="Annual Mean Temp - Asia (deg C)")
+
+
+```
+
+
+<br />
+
+##### Digital Elevation Data
+```{r, fig.width=8, fig.height=10}
+#save and export worldclim elevation data
+
+# new.raster<-worldclimelev
+# new.rasterName<-"wc_elev"
+# print(new.rasterName)
+# 
+# print("cropping raster to SLF_shp")
+# ras_crop = raster::crop(new.raster, extent(SLF_shp))
+# ras_mask = raster::mask(ras_crop, SLF_shp)
+# #plot(ras_mask)
+# 
+# raster::writeRaster(ras_mask, filename=file.path(paste("./Data/WorldClim_elev_rasters/",new.rasterName,"_ALL_1km.tif",sep="")), format="GTiff", overwrite=TRUE)
+# 
+wc_elev<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/WorldClim_elev_rasters/wc_elev_ALL_1km.tif")
+
+#plot(wc_elev, col=parula(100))
+
+#separate and plot
+USA_elev<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/WorldClim_elev_rasters/wc_elev_USA_1km.tif")
+Asia_elev<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/WorldClim_elev_rasters/wc_elev_Asia_1km.tif")
+
+#plot both plots
+par(mai=c(1,0.5,1,0.5), mfrow=c(2,1))
+plot(USA_elev, col=parula(100), main="Digital Elevation Map - USA (m)")
+plot(Asia_elev, col=parula(100), main="Digital Elevation Map - Asia (m)")
+
+```
+
+<br />
+
+##### Human Footprint data ver. 3 (Venter et al. 2018)
+```{r, message=FALSE, warning=FALSE, fig.width=8, fig.height=10}
+
+# #reproject
+# #set destination filepath
+# src_dataset="/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/human_footprint_data/human.footprint.raster.tif"
+# 
+# #use gdalUtils::gdalwarp
+# gdalUtils::gdalwarp(srcfile=src_dataset,dstfile=file.path(getwd(),"Data/human_footprint_data/human.footprint.raster.proj_latlong.tif"),t_srs="+proj=longlat +datum=WGS84 +no_defs +ellps=WGS84 +towgs84=0,0,0",overwrite=TRUE,verbose=TRUE)
+# 
+# new.raster<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/human_footprint_data/human.footprint.raster.proj_latlong.tif")
+# new.rasterName<-"human_footprint"
+# 
+# #project raster
+# new.raster.proj<-projectRaster(new.raster, wcElev_mask, method='ngb')
+# 
+# plot(new.raster.proj, col=parula(100))
+# 
+# print("cropping raster")
+# ras_crop = raster::crop(new.raster.proj, extent(SLF_shp))
+# ras_mask = raster::mask(ras_crop, SLF_shp)
+# #plot(ras_mask)
+# 
+# raster::writeRaster(ras_mask, filename=file.path(paste("./Data/human_footprint_data/",new.rasterName,"_ALL_1km.tif",sep="")), format="GTiff", overwrite=TRUE)
+
+humanFootprint<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/human_footprint_data/human_footprint_ALL_1km.tif")
+
+#plot(humanFootprint, col=parula(100))
+
+#separate and plot
+USA_humanFootprint<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/human_footprint_data/human_footprint_USA_1km.tif")
+Asia_humanFootprint<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/human_footprint_data/human_footprint_Asia_1km.tif")
+
+#plot both plots
+par(mai=c(1,0.5,1,0.5), mfrow=c(2,1))
+plot(USA_humanFootprint, col=parula(100), main="Human Footprint - USA")
+plot(Asia_humanFootprint, col=parula(100), main="Human Footprint - Asia")
+
+```
+
+<br />
+
+##### Host plant distribution data (Tree-of-Heaven) to include in models from Global Biodiversity Information Facility (GBIF; Lane and Edwards 2007)
+```{r, warning=FALSE, message=FALSE, fig.width=8, fig.height=10}
+
+#TOH
+toh.gbif<-read.table("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/GBIF_TOH/0048906-200221144449610.csv",sep="\t",fill=TRUE,header=TRUE)
+
+countriesKeep<-c("CN", "IN", "JP", "KP","KR","VN", "US")
+
+#subset
+toh.gbif.sub<-subset(toh.gbif, countryCode %in% countriesKeep)
+
+#make table of frequency of detections per country
+freq.table.toh<-aggregate(gbifID~countryCode, FUN=length, data=toh.gbif.sub)
+
+# countryCode gbifID_TOH 
+# 1          CN    199
+# 2          IN      1
+# 3          JP    112
+# 4          KR      8
+ 
+#remove any rows without coords
+toh.gbif.sub<-subset(toh.gbif.sub, !is.na(decimalLatitude))
+
+# #simplify data
+toh.data.df<-toh.gbif.sub[,c("decimalLatitude","decimalLongitude")]
+colnames(toh.data.df)<-c("Latitude","Longitude")
+toh.data.df<-unique(na.omit(toh.data.df))
+
+#convert coords to numeric
+toh.data.df$Latitude<-as.numeric(as.character(toh.data.df$Latitude))
+toh.data.df$Longitude<-as.numeric(as.character(toh.data.df$Longitude))
+
+#now add other TOH data
+toh.data.2<-read.csv("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/Tree_of_Heaven_data/24695.csv", skip=3,header=TRUE)
+
+#remove any rows without coords
+toh.data.2<-subset(toh.data.2, !is.na(Latitude))
+
+#keep only positive detections
+toh.data.2.df<-subset(toh.data.2, OccStatus=="Positive")
+
+#remove Latitude > 50
+toh.data.2.df<-subset(toh.data.2.df, Latitude < 50)
+
+#simplify data
+toh.data.2.df<-toh.data.2.df[,c("Latitude","Longitude")]
+
+toh.data.2.df<-unique(na.omit(toh.data.2.df))
+
+#convert coords to numeric
+toh.data.2.df$Latitude<-as.numeric(as.character(toh.data.2.df$Latitude))
+toh.data.2.df$Longitude<-as.numeric(as.character(toh.data.2.df$Longitude))
+
+#combine toh data
+toh.data.comb<-unique(rbind(toh.data.df, toh.data.2.df))
+
+#remove weird Latitude values <0
+toh.data.comb<-subset(toh.data.comb, ! Latitude < 0)
+
+#remove data point
+toh.data.comb<-subset(toh.data.comb, Longitude !=	5.110780)
+toh.data.comb<-subset(toh.data.comb, Longitude != -6.595394)
+
+toh.data.comb.coords<-toh.data.comb
+
+#add value of 1 to indicate presence 
+toh.data.comb.coords$Value<-1
+
+coordinates(toh.data.comb.coords)<- ~Longitude+Latitude
+
+#plot
+#plot(SLF_shp,col="gray90")
+#points(toh.data.comb.coords, pch=16, cex=0.5, col=alpha("red",0.5))
+
+#plot 2 maps separately
+par(mai=c(1,0.5,1,0.5), mfrow=c(2,1))
+plot(IntroducedRangeMap_sp, col="gray90", main="Tree-of-Heaven locations - USA")
+points(subset(toh.data.comb.coords, toh.data.comb.coords@coords[,1] < 0), pch=16, cex=0.8, col=alpha("red",0.5))
+plot(NativeRangeMap_sp, col="gray90",main="Tree-of-Heaven locations - Asia")
+points(subset(toh.data.comb.coords, toh.data.comb.coords@coords[,1] > 0), pch=16, cex=0.8, col=alpha("red",0.5))
+
+
+# get coordinates of each point
+#x <- na.omit(cbind(as.numeric(as.character(toh.data.comb$Longitude)), as.numeric(as.character(toh.data.comb$Latitude))))
+
+#rasterize points
+#temp.rast <- raster()
+#extent(temp.rast) <- extent(SLF_shp) # this might be unnecessary
+
+# And then ... rasterize it! This creates a grid version 
+# of your points using the cells of rast, values from the IP field:
+#rast.out <- rasterize(toh.data.comb.coords, field=toh.data.comb.coords@data$Value,temp.rast, background=0, fun=mean)
+
+#project raster to get into correct dimensions
+#rast.proj<-projectRaster(rast.out,wc_elev)
+
+#now mask, while still in latlong
+#toh_rasterDF.crop<-raster::crop(rast.proj, extent(SLF_shp))
+
+#plot(toh_rasterDF.crop)
+#toh_rasterDF.mask<-raster::mask(toh_rasterDF.crop, SLF_shp)
+
+#writeRaster
+#raster::writeRaster(toh_rasterDF.mask, filename=file.path("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/Tree_of_Heaven_data/toh_raster_ALL_1km_latlong.tif"), format="GTiff", overwrite=TRUE)
+
+toh_rasterDF.mask<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/Tree_of_Heaven_data/toh_raster_ALL_1km_latlong.tif")
+
+#plot(toh_rasterDF.mask, col=parula(100))
+
+#plot both maps separately
+USA_toh_raster<-crop(toh_rasterDF.mask, extent(IntroducedRangeMap_sp))
+Asia_toh_raster<-crop(toh_rasterDF.mask, extent(NativeRangeMap_sp))
+
+par(mai=c(1,0.5,1,0.5), mfrow=c(2,1))
+plot(USA_toh_raster, col=parula(100), main="Raster of Tree-of-Heaven detection - USA")
+plot(Asia_toh_raster, col=parula(100), main="Raster of Tree-of-Heaven detection - Asia")
+
+
+
+
+```
+
+
+<br />
+
+
+#### Get summary statistics (n, Mean, SD, SE, and CV) for bioclimate model variables
+```{r, warning=FALSE, message=FALSE}
+
+#combine all variables, save as .Rdata and then test for correlations
+
+# #get BioClim data
+# bioClimFiles<-list.files("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All", full.names = TRUE)
+# 
+# bioClimNames<-list.files("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All", full.names = FALSE)
+# 
+# #compile file paths
+# modelVariables<-bioClimFiles
+# #compile list of filenames
+# fileNames<-bioClimNames
+# 
+# #read in raster data
+# variable.summary<-list()
+# data.compile<-data.frame("Cell"=seq(1:30621928))
+# for(i in 1:length(modelVariables)){
+#   
+#   new.name<-fileNames[i]
+#   print(new.name)
+#   
+#   new.raster<-raster(modelVariables[i])
+#   
+#   #plot(new.raster)
+#   
+#   new.data<-na.omit(as.data.frame(new.raster, xy=TRUE))
+#   
+#   new.data.out<- data.frame(new.data[,3])
+#   
+#   colnames(new.data)[3]<-"Value"
+#   new.data$VariableName<-new.name
+#   
+#   #get summary info
+#   new.data.summary<-summaryFunction(DataIn=new.data, factor="VariableName",response="Value")
+#   
+#   colnames(new.data.out)<-gsub(".tif","",new.name)
+#   
+#   #compile results
+#   variable.summary<-rbind(variable.summary, new.data.summary)
+#   
+#   data.compile<-rowr::cbind.fill(data.compile, new.data.out)
+#   
+# }
+# 
+# # Save an object to a file
+# saveRDS(data.compile, file = "/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/WorldClim_bioclim_All_variables_data.rds")
+
+#load .rds file
+variable.data<-readRDS("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/WorldClim_bioclim_All_variables_data.rds")
+
+#now print example table of variable summaries
+kable(head(variable.data,10), digits=2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = TRUE, font_size = 12)
+
+```
+
+<br />
+
+#### Testing for multicolinearity (Pearson's R)
+```{r, warning=FALSE, message=FALSE, fig.width=6, fig.cap="Pearson's R correlation plot of variables"}
+
+#remove 1st column
+# data.compile.sub<-variable.data[,-1]
+# 
+# #create a matrix of these data
+# data_rcorr <-as.matrix(data.compile.sub)
+# 
+# #get correlation matrix
+# mat_2 <-Hmisc::rcorr(data_rcorr)
+# # mat_2 <-rcorr(as.matrix(data)) returns the same output
+# 
+# mat.df<-as.data.frame(mat_2[1])
+
+#save correlation table
+# write.csv(mat.df, file="/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/Tables/WorldClim_bioclim_Variable_PearsonsR.csv",row.names=TRUE)
+
+#plot the correlation matrix with GGally package
+# corrPlot<-GGally::ggcorr(data_rcorr, midpoint=0.8)
+# print(corrPlot)
+
+
+#save plot
+# jpeg(file = "/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/Figures/WorldClim_bioclim_variable_correlations.jpeg", width=10, height=10, units="in",res=600)
+# 
+# print(corrPlot)
+# 
+# dev.off()
+
+include_graphics("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/Figures/WorldClim_bioclim_variable_correlations.jpeg")
+
+
+```
+
+<br />
+
+#### Remove highly-correlated variables (i.e., >= 0.8), and only include representative variables
+```{r, warning=FALSE, message=FALSE, fig.width=6, fig.cap="Binary plot of Pearson's R correlations > 0.8"}
+
+#look at binary heatmap where all correlations > 0.8 or < 0.8 are colored
+# mat.df_mod<-abs(mat.df)
+# mat.df_mod_2<-ifelse(mat.df_mod<=0.8,0,1)
+
+#melt the data
+# mat.df_melt<-melt(mat.df_mod_2)
+
+# Get upper triangle of the correlation matrix
+# get_upper_tri <- function(cormat){
+#   cormat[lower.tri(cormat)]<- NA
+#   return(cormat)
+# }
+
+# upper_tri <- get_upper_tri(cormat=mat.df_mod_2)
+# 
+# melted_cormat <- melt(upper_tri, na.rm = TRUE)
+# 
+# corrPlot_2<-ggplot(data = melted_cormat, aes(x=Var1, y=Var2, fill=value)) + 
+#   geom_tile(color="gray10")+
+#   theme(axis.text.x=element_text(angle=90))
+# 
+# print(corrPlot_2)
+# 
+# ggsave(corrPlot_2, file="/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/Figures/WorldClim_bioclim_variable_correlations_2.png", width=10, height=10, units="in",dpi=300)
+
+include_graphics("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/Figures/WorldClim_bioclim_variable_correlations_2.png")
+
+#remove the following correlated variables: bio_10, bio_11, bio_5, bio_6, bio_9, bio_13, bio_16, bio_17, bio_7
+
+```
+
+<br />
+
+#### Create a raster stack of predictor variables for MAXENT model
+```{r, warning=FALSE, message=FALSE, fig.width=10, fig.height=6}
+
+#now stack predictors
+
+bio1 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_1_ALL_1km.tif")
+
+bio2 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_2_ALL_1km.tif")
+
+bio3 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_3_ALL_1km.tif")
+
+bio4 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_4_ALL_1km.tif")
+
+bio5 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_5_ALL_1km.tif")
+
+bio6 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_6_ALL_1km.tif")
+
+bio7 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_7_ALL_1km.tif")
+
+bio8 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_8_ALL_1km.tif")
+
+bio9 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_9_ALL_1km.tif")
+
+bio10 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_10_ALL_1km.tif")
+
+bio11 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_11_ALL_1km.tif")
+
+bio12 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_12_ALL_1km.tif")
+
+bio13 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_13_ALL_1km.tif")
+
+bio14 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_14_ALL_1km.tif")
+
+bio15 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_15_ALL_1km.tif")
+
+bio16 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_16_ALL_1km.tif")
+
+bio17 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_17_ALL_1km.tif")
+
+bio18 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_18_ALL_1km.tif")
+
+bio19 = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/BioClim_WorldClim_rasters_All/wc2.1_30s_bio_19_ALL_1km.tif")
+
+US_dem =raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/WorldClim_elev_rasters/wc_elev_ALL_1km.tif")
+  
+humanFootprint = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/human_footprint_data/human_footprint_ALL_1km.tif")
+
+TOH_raster = raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/Tree_of_Heaven_data/toh_raster_ALL_1km_latlong.tif")
+
+#make the raster stack
+predictorsSLF<-stack(bio1, bio2, bio3, bio4, bio8, bio12, bio14, bio15, bio18, bio19, US_dem, humanFootprint, TOH_raster)
+
+plot(predictorsSLF, col=parula(100))
+
+```
+
+<br />
+
+#### Get SLF detection data (from State of PA, NY IPM, and GBIF) and apply buffers (300 km; following Walkie et al. 2019) to extract raster covariate data
+```{r, message=FALSE, warning=FALSE, fig.width=8, fig.height=10}
+
+#read in SLF location data from gbif
+slf.gbif<-read.table("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/GBIF_SLF/0048909-200221144449610.csv",sep="\t",header=TRUE, fill=TRUE)
+
+#subset by countries
+countriesAsia<-c("CN", "IN", "JP", "KP","KR","VN")
+
+slf.Asia<-subset(slf.gbif, countryCode %in% countriesAsia)
+
+#make table of frequency of detections per country
+freq.table<-aggregate(gbifID~countryCode, FUN=length, data=slf.Asia)
+
+slf.Asia.coords<-slf.Asia[,c("decimalLongitude","decimalLatitude")]
+colnames(slf.Asia.coords)<-c("Longitude","Latitude")
+
+#read in SLF presence data
+slf.USA.locations.df<-read.csv("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/SLF_presence_data/SLF_presence_data.csv",header=TRUE)
+
+slf.comb<-na.omit(rbind(slf.Asia.coords, slf.USA.locations.df))
+
+#step one is to spatially join locations with buffers and generate a polygon, to sample environmental data from
+coordinates(slf.comb) <- ~Longitude + Latitude
+projection(slf.comb)<-CRS('+proj=longlat')
+
+# plot(SLF_shp,col="gray90")
+# points(slf.comb, pch=16, cex=0.5, col=alpha("royalblue3",0.5),add=TRUE)
+
+#make data.frame
+slf.comb.df<-as.data.frame(slf.comb)
+
+#plot two maps together
+#plot 2 maps separately
+
+par(mai=c(1,0.5,1,0.5), mfrow=c(2,1))
+plot(IntroducedRangeMap_sp, col="gray90", main="Spotted Lanternfly locations - USA")
+points(subset(slf.comb.df, slf.comb.df$Longitude < 0), pch=16, cex=0.8, col=alpha("royalblue2",0.5))
+plot(NativeRangeMap_sp, col="gray90", main="Spotted Lanternfly locations - USA")
+points(subset(slf.comb.df, slf.comb.df$Longitude > 0), pch=16, cex=0.8, col=alpha("royalblue2",0.5))
+
+# circular buffers with a radius of 300 km
+x <- dismo::circles(slf.comb, d=300000, lonlat=TRUE)
+
+pol <- polygons(x)
+# plot(SLF_shp,col="gray90")
+# plot(pol,col=alpha("yellow",0.3),add=TRUE)
+
+x_USA<-dismo::circles(slf.USA.locations.df, d=300000, lonlat=TRUE)
+x_Asia<-dismo::circles(na.omit(slf.Asia.coords), d=300000, lonlat=TRUE)
+pol_USA<-polygons(x_USA)
+pol_Asia<-polygons(x_Asia)
+
+par(mai=c(1,0.5,1,0.5), mfrow=c(2,1))
+plot(IntroducedRangeMap_sp, col="gray90", main="Spotted Lanternfly locations with 300-km buffer - USA")
+points(subset(slf.comb.df, slf.comb.df$Longitude < 0), pch=16, cex=0.8, col=alpha("royalblue2",0.5))
+plot(pol_USA,col=alpha("yellow",0.3),add=TRUE)
+
+plot(NativeRangeMap_sp, col="gray90", main="Spotted Lanternfly locations with 300-km buffer - Asia")
+points(subset(slf.comb.df, slf.comb.df$Longitude > 0), pch=16, cex=0.8, col=alpha("royalblue2",0.5))
+plot(pol_Asia,col=alpha("yellow",0.3),add=TRUE)
+
+
+
+
+```
+
+<br />
+
+#### Extract values from rasters (variables) using SLF lococations polygon as a mask
+```{r, message=FALSE, warning=FALSE}
+
+#extracting values from rasters
+#presvals <- raster::extract(predictorsSLF, x@polygons)
+
+#save presvals
+#saveRDS(presvals, file = "/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/Raster_extracted_values.rds")
+
+#load .rds file
+presvals<-readRDS("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/Raster_extracted_values.rds")
+
+# setting random seed to always create the same
+# random set of points for this example
+set.seed(0)
+backgr <- dismo::randomPoints(predictorsSLF, 500)
+absvals <- raster::extract(predictorsSLF, backgr)
+pb <- c(rep(1, nrow(presvals[[1]])), rep(0, nrow(absvals)))
+sdmdata <- data.frame(cbind(pb, rbind(presvals, absvals)))
+#names(sdmdata)[names(sdmdata)=="human.footprint.raster.mask"]<-"human_footprint"
+#head(sdmdata)
+
+#create training and test data for MaxENt
+group <- dismo::kfold(slf.comb, 5)
+pres_train <- slf.comb[group != 1, ]
+pres_test <- slf.comb[group == 1, ]
+
+#ext = extent(toh.locations.df)
+
+backg <- dismo::randomPoints(predictorsSLF, n=1000, ext=extent(SLF_shp), extf = 1.25)
+colnames(backg) = c('lon', 'lat')
+group <- dismo::kfold(backg, 5)
+backg_train <- backg[group != 1, ]
+backg_test <- backg[group == 1, ]
+
+
+```
+
+<br />
+
+### Results
+
+#### Fit models and make predictions
+
+##### Fit MAXENT model, evaluate, and plot predictions
+```{r, warning=FALSE, message=FALSE}
+
+#fit model (requires Java)
+#xmSLF <- dismo::maxent(predictorsSLF, pres_train)
+
+#save model output
+#saveRDS(xmSLF, file = "/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/xmSLF_maxentModel_1.rds")
+
+#load .rds file
+xmSLF<-readRDS("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/xmSLF_maxentModel_1.rds")
+
+#plot variable importance
+plot(xmSLF, col="blue", pch=16)
+
+#plot response curves
+dismo::response(xmSLF)
+
+#predict and map
+e <- dismo::evaluate(pres_test, backg_test, xmSLF, predictorsSLF)
+e
+
+```
+
+<br />
+
+##### Resulting predicted map of SLF distribution, USA
+```{r,warning=FALSE, message=FALSE, fig.width=9}
+
+# #get model-predicted estimates from MAXENT model
+# pxSLF <- dismo::predict(predictorsSLF, xmSLF, ext=extent(extent(IntroducedRangeMap_sp)), progress='text')
+# 
+# plot(pxSLF, col=parula(100))
+# 
+# #writeRaster
+# raster::writeRaster(pxSLF, filename=file.path("./Results/SLF_predicted_distribution_7_300km_rad.tif"), format="GTiff", overwrite=TRUE)
+
+SLF_MAXENT_dist<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/SLF_predicted_distribution_7_300km_rad.tif")
+
+plot(SLF_MAXENT_dist, col=parula(100), main="MAXENT model-estimated likelihood of Spotted Lanternfly range - USA")
+
+```
+
+<br />
+
+##### Predicted map of SLF distribution in Pennsylvania
+```{r, message=FALSE, warning=FALSE, fig.width=9}
+
+# #get shapefile for PA
+# PAmap<-map('state',"pennsylvania",boundary=FALSE, interior = FALSE,fill=TRUE, col="royalblue1", plot=FALSE)
+# 
+# #convert map to spatialPolygons
+# PAmap_sp<-map2SpatialPolygons(PAmap,IDs=PAmap$names,proj4string = CRS(myCRS), checkHoles=FALSE)
+# 
+# PA_pid <- sapply(slot(PAmap_sp, "polygons"), function(x) slot(x, "ID"))
+# PA_p.df <- data.frame( ID=1:length(PAmap_sp), row.names = PA_pid)
+# PAmap_sp.df <- SpatialPolygonsDataFrame(PAmap_sp,PA_p.df)
+# 
+# #save as a shapefile
+# writeOGR(obj=PAmap_sp.df, dsn="/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/SLF_Range_Map", layer="SLF_range_PA", driver="ESRI Shapefile",overwrite_layer = TRUE)
+# 
+# #read in shapefile
+# PA_shp<-readOGR(dsn="/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Data/SLF_Range_Map/",layer="SLF_range_PA")
+# 
+# #read in raster of SLF MAXENT prediction and crop by PA_shp
+# ras_crop = raster::crop(SLF_MAXENT_dist, extent(PA_shp))
+# ras_mask = raster::mask(ras_crop, PA_shp)
+# 
+# raster::writeRaster(ras_mask, filename=file.path("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/SLF_predicted_distribution_7_300km_rad_PA.tif"), format="GTiff", overwrite=TRUE)
+
+PA_SLF_maxent<-raster("/Users/zach/Dropbox (ZachTeam)/Projects/Spotted_Lanternfly/Analyses/Predicted_Distribution_MaxEnt/Results/SLF_predicted_distribution_7_300km_rad_PA.tif")
+
+plot(PA_SLF_maxent, col=parula(100), main="MAXENT model-estimated likelihood of Spotted Lanternfly range in Pennsylvania")
+
+```
+
+<br />
+
+### Discussion
+
+
+
+### References
+
+Barringer, L. E., L. R. Donovall, S-E. Spichiger, D. Lynch, and D. Henry. 2015.
+The first new world record of Lycorma delicatula (Insecta: Hemiptera:
+Fulgoridae). Entomol. News. 125:20–23.
+
+Evangelista, P. and D. Beskow. pointdensityP: Point Density for Geospatial Data, 2018. URL https://CRAN.R-project.org/package=pointdensityP. R package version 0.3.4. [p347]
+
+Fick, S.E. and Hijmans, R.J., 2017. WorldClim 2: new 1‐km spatial resolution climate surfaces for global land areas. International journal of climatology, 37(12), pp.4302-4315.
+
+Hijmans, R.J. and Elith, J., 2013. Species distribution modeling with R. R package version, pp.08-11.
+
+Lane, M.A. and Edwards, J.L., 2007. The global biodiversity information facility (GBIF). In Biodiversity Databases (Vol. 1, No. 4, pp. 1-4). ROUTLEDGE in association with GSE Research.
+
+O’Donnell, M.S. and Ignizio, D.A., 2012. Bioclimatic predictors for supporting ecological applications in the conterminous United States. US Geological Survey Data Series, 691(10).
+
+Namgung, H., Kim, M.J., Baek, S., Lee, J.H. and Kim, H., 2020. Predicting potential current distribution of Lycorma delicatula (Hemiptera: Fulgoridae) using MaxEnt model in South Korea. Journal of Asia-Pacific Entomology, 23(2), pp.291-297.
+
+Venter, O., E. W. Sanderson, A. Magrach, J. R. Allan, J. Beher, K. R. Jones, H. P. Possingham, W. F. Laurance, P. Wood, B. M. Fekete, M. A. Levy, and J. E. Watson. 2018. Last of the Wild Project, Version 3 (LWP-3): 1993 Human Footprint, 2018 Release. NASA Socioeconomic Data and Applications Center (SEDAC), Palisades, NY. https://doi.org/10.7927/H4H9938Z.
+
+Wakie, T.T., Neven, L.G., Yee, W.L. and Lu, Z., 2020. The establishment risk of Lycorma delicatula (Hemiptera: Fulgoridae) in the United States and globally. Journal of Economic Entomology, 113(1):306-314.
+
+
+
